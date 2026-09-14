@@ -1,0 +1,37 @@
+# Dependencies
+node_modules/
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+
+# Next.js
+web/.next/
+web/out/
+web/.turbo/
+
+# Env / secrets
+.env
+.env.local
+.env.*.local
+
+# Uploads / analysis artifacts
+api/uploads/
+*.png.overlay.png
+
+# OS / IDE
+.DS_Store
+.idea/
+.vscode/
+*.swp
+
+# Python / packaging
+*.egg-info/
+dist/
+build/
+
+# Logs
+npm-debug.log*
+*.log
