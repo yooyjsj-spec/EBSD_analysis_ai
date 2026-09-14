@@ -206,7 +206,11 @@ export default function HomePage() {
                 </button>
               </div>
               {displayImage && (
-                <img src={displayImage} alt="분석 결과" className="max-h-[420px] w-full rounded-lg object-contain" />
+                <img
+                  src={displayImage}
+                  alt="분석 결과"
+                  className="mx-auto max-h-[480px] w-full rounded-lg bg-black/30 object-contain"
+                />
               )}
             </div>
 

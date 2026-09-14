@@ -169,7 +169,7 @@ def _encode_overlay(rgb: np.ndarray, labels: np.ndarray) -> str:
     tinted = label2rgb(labels, image=rgb, bg_label=0, alpha=0.38, saturation=0.75)
     overlay = (np.clip(tinted, 0, 1) * 255).astype(np.uint8)
     bounds = find_boundaries(labels, mode="outer")
-    thick = dilation(bounds, disk(1))
+    thick = dilation(bounds, disk(2))
     overlay[thick] = np.array([255, 208, 64], dtype=np.uint8)
     bgr = cv2.cvtColor(overlay, cv2.COLOR_RGB2BGR)
     ok, buf = cv2.imencode(".png", bgr)
