@@ -2,6 +2,7 @@
 
 import { useMemo, useRef, useState } from "react";
 import { KpiCard, SiteHeader, formatNum, formatPct } from "../components/ui";
+import { runSem } from "../lib/clientAnalysis";
 import type { SemResult } from "../lib/types";
 
 const ACCEPT = "image/png,image/jpeg,image/tiff,image/webp,.png,.jpg,.jpeg,.tif,.tiff,.webp";
@@ -37,15 +38,12 @@ export default function SemPage() {
     }
     setLoading(true);
     setError(null);
-    const form = new FormData();
-    form.append("file", file);
-    form.append("min_feature_px", String(minFeaturePx));
-    if (umPerPixel.trim()) form.append("um_per_pixel", umPerPixel.trim());
     try {
-      const res = await fetch("/api/analyze/sem", { method: "POST", body: form });
-      const body = await res.json();
-      if (!res.ok) throw new Error(body.detail || "분석에 실패했습니다.");
-      setResult(body as SemResult);
+      const body = await runSem(file, {
+        umPerPixel: umPerPixel.trim() ? Number(umPerPixel.trim()) : null,
+        minFeaturePx,
+      });
+      setResult(body);
       setShowOverlay(true);
     } catch (err) {
       setError(err instanceof Error ? err.message : "분석에 실패했습니다.");

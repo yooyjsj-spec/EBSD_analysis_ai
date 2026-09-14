@@ -2,6 +2,7 @@
 
 import { useMemo, useRef, useState } from "react";
 import { Histogram, KpiCard, SiteHeader, formatNum, formatPct } from "../components/ui";
+import { runIpf } from "../lib/clientAnalysis";
 import type { IpfResult } from "../lib/types";
 
 const ACCEPT = "image/png,image/jpeg,image/tiff,image/webp,.png,.jpg,.jpeg,.tif,.tiff,.webp";
@@ -51,16 +52,13 @@ export default function IpfPage() {
     }
     setLoading(true);
     setError(null);
-    const form = new FormData();
-    form.append("file", file);
-    form.append("min_grain_px", String(minGrainPx));
-    form.append("exclude_edge", String(excludeEdge));
-    if (umPerPixel.trim()) form.append("um_per_pixel", umPerPixel.trim());
     try {
-      const res = await fetch("/api/analyze/ipf", { method: "POST", body: form });
-      const body = await res.json();
-      if (!res.ok) throw new Error(body.detail || "분석에 실패했습니다.");
-      setResult(body as IpfResult);
+      const body = await runIpf(file, {
+        umPerPixel: umPerPixel.trim() ? Number(umPerPixel.trim()) : null,
+        minGrainPx,
+        excludeEdge,
+      });
+      setResult(body);
       setShowOverlay(true);
     } catch (err) {
       setError(err instanceof Error ? err.message : "분석에 실패했습니다.");

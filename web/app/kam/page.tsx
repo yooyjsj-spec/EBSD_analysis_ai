@@ -2,6 +2,7 @@
 
 import { useMemo, useRef, useState } from "react";
 import { Histogram, KpiCard, SiteHeader, formatNum, formatPct, formatSci } from "../components/ui";
+import { runKam } from "../lib/clientAnalysis";
 import type { KamResult } from "../lib/types";
 
 const ACCEPT = "image/png,image/jpeg,image/tiff,image/webp,.png,.jpg,.jpeg,.tif,.tiff,.webp";
@@ -39,17 +40,14 @@ export default function KamPage() {
     }
     setLoading(true);
     setError(null);
-    const form = new FormData();
-    form.append("file", file);
-    form.append("max_kam_deg", maxKam);
-    form.append("recrystallized_cut", rxCut);
-    form.append("deformed_cut", defCut);
-    if (umPerPixel.trim()) form.append("um_per_pixel", umPerPixel.trim());
     try {
-      const res = await fetch("/api/analyze/kam", { method: "POST", body: form });
-      const body = await res.json();
-      if (!res.ok) throw new Error(body.detail || "분석에 실패했습니다.");
-      setResult(body as KamResult);
+      const body = await runKam(file, {
+        umPerPixel: umPerPixel.trim() ? Number(umPerPixel.trim()) : null,
+        maxKamDeg: Number(maxKam),
+        recrystallizedCut: Number(rxCut),
+        deformedCut: Number(defCut),
+      });
+      setResult(body);
       setShowOverlay(true);
     } catch (err) {
       setError(err instanceof Error ? err.message : "분석에 실패했습니다.");
