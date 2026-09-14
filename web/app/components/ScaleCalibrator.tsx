@@ -4,6 +4,8 @@ import { useEffect, useState } from "react";
 import { detectScaleBar, type ScaleBarDetection } from "../lib/scaleBar";
 import { formatNum } from "./ui";
 
+const PRESETS = [1, 2, 5, 10, 20, 50, 100, 200, 500] as const;
+
 type Props = {
   file: File | null;
   value: string;
@@ -101,7 +103,25 @@ export function ScaleCalibrator({ file, value, onChange }: Props) {
               </span>
             </p>
             <label className="block text-sm">
-              <span className="mb-1 block text-metal-muted">{spanLabel}의 실제 길이 (µm)</span>
+              <span className="mb-1 block text-metal-muted">
+                {spanLabel}의 실제 길이 (µm) — 스케일바 옆에 적힌 값
+              </span>
+              <div className="mb-2 flex flex-wrap gap-1">
+                {PRESETS.map((preset) => (
+                  <button
+                    key={preset}
+                    type="button"
+                    onClick={() => setPhysical(String(preset))}
+                    className={`rounded-full border px-2 py-0.5 text-[11px] transition ${
+                      physical === String(preset)
+                        ? "border-metal-gold text-metal-gold"
+                        : "border-metal-line text-metal-muted hover:text-metal-text"
+                    }`}
+                  >
+                    {preset}
+                  </button>
+                ))}
+              </div>
               <div className="flex gap-2">
                 <input
                   type="number"
