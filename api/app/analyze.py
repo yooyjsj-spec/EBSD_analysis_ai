@@ -2,54 +2,18 @@
 
 from __future__ import annotations
 
-import base64
-import io
 import math
 from typing import Any
 
 import cv2
 import numpy as np
-from PIL import Image
 from skimage.color import label2rgb
 from skimage.graph import cut_threshold, rag_mean_color
 from skimage.measure import regionprops
 from skimage.morphology import dilation, disk
 from skimage.segmentation import expand_labels, find_boundaries, relabel_sequential
 
-MAX_LONG_EDGE = 2048
-MAX_FILE_BYTES = 25 * 1024 * 1024
-ALLOWED_FORMATS = {"PNG", "JPEG", "JPG", "TIFF", "TIF", "WEBP", "BMP"}
-
-
-class AnalysisError(ValueError):
-    """User-facing analysis failure."""
-
-
-def _decode_image(data: bytes) -> np.ndarray:
-    if len(data) > MAX_FILE_BYTES:
-        raise AnalysisError("이미지 크기는 25MB 이하여야 합니다.")
-
-    pil = Image.open(io.BytesIO(data))
-    fmt = (pil.format or "").upper()
-    if fmt not in ALLOWED_FORMATS:
-        raise AnalysisError("PNG, JPEG, TIFF 이미지만 지원합니다.")
-
-    rgb = np.array(pil.convert("RGB"))
-    if rgb.size == 0:
-        raise AnalysisError("이미지를 읽을 수 없습니다.")
-    return rgb
-
-
-def _maybe_resize(rgb: np.ndarray) -> tuple[np.ndarray, float]:
-    h, w = rgb.shape[:2]
-    long_edge = max(h, w)
-    if long_edge <= MAX_LONG_EDGE:
-        return rgb, 1.0
-    scale = MAX_LONG_EDGE / long_edge
-    new_w = max(1, int(round(w * scale)))
-    new_h = max(1, int(round(h * scale)))
-    resized = cv2.resize(rgb, (new_w, new_h), interpolation=cv2.INTER_AREA)
-    return resized, scale
+from app.image_io import AnalysisError, decode_image, encode_png, maybe_resize
 
 
 def _connected_components_by_value(color_ids: np.ndarray) -> np.ndarray:
@@ -171,11 +135,33 @@ def _encode_overlay(rgb: np.ndarray, labels: np.ndarray) -> str:
     bounds = find_boundaries(labels, mode="outer")
     thick = dilation(bounds, disk(2))
     overlay[thick] = np.array([255, 208, 64], dtype=np.uint8)
-    bgr = cv2.cvtColor(overlay, cv2.COLOR_RGB2BGR)
-    ok, buf = cv2.imencode(".png", bgr)
-    if not ok:
-        raise AnalysisError("오버레이 이미지를 생성하지 못했습니다.")
-    return base64.b64encode(buf.tobytes()).decode("ascii")
+    return encode_png(overlay)
+
+
+def _ipf_texture(rgb: np.ndarray) -> tuple[list[dict[str, float | str]], float]:
+    """Approximate cubic IPF-Z components from map colors (red<001>, green<101>, blue<111>)."""
+    r = rgb[:, :, 0].astype(np.float32)
+    g = rgb[:, :, 1].astype(np.float32)
+    b = rgb[:, :, 2].astype(np.float32)
+    total = r + g + b + 1e-6
+    rn, gn, bn = r / total, g / total, b / total
+    red_mask = (rn >= gn) & (rn >= bn) & (rn > 0.42)
+    green_mask = (gn >= rn) & (gn >= bn) & (gn > 0.42)
+    blue_mask = (bn >= rn) & (bn >= gn) & (bn > 0.42)
+    other = ~(red_mask | green_mask | blue_mask)
+    components = [
+        {"label": "<001> (적)", "area_fraction": float(red_mask.mean())},
+        {"label": "<101> (녹)", "area_fraction": float(green_mask.mean())},
+        {"label": "<111> (청)", "area_fraction": float(blue_mask.mean())},
+        {"label": "기타", "area_fraction": float(other.mean())},
+    ]
+    hsv = cv2.cvtColor(rgb, cv2.COLOR_RGB2HSV)
+    hist, _ = np.histogram(hsv[:, :, 0], bins=18, range=(0, 180), density=True)
+    hist = hist + 1e-12
+    hist = hist / hist.sum()
+    entropy = float(-np.sum(hist * np.log(hist)))
+    texture_index = float(1.0 - entropy / math.log(18))
+    return components, texture_index
 
 
 def analyze_image(
@@ -189,9 +175,9 @@ def analyze_image(
     if um_per_pixel is not None and um_per_pixel <= 0:
         raise AnalysisError("µm/pixel 값은 0보다 커야 합니다.")
 
-    original = _decode_image(data)
+    original = decode_image(data)
     orig_h, orig_w = original.shape[:2]
-    rgb, resize_scale = _maybe_resize(original)
+    rgb, resize_scale = maybe_resize(original)
     min_area_resized = max(4, int(round(min_grain_px * resize_scale * resize_scale)))
 
     labels, method = _segment(rgb, min_area_resized)
@@ -256,9 +242,11 @@ def analyze_image(
     unit = "µm" if has_scale else "px"
     overlay = _encode_overlay(rgb, labels)
     analyzed_pixels = float(sum(g["area_px"] for g in grains))
+    texture_components, texture_index = _ipf_texture(rgb)
     notes = [
         "이미지 분할(ASTM E1382류) 결과입니다. 방위각 파일 기반 ASTM E2627과 동일하지 않습니다.",
         "같은 색이어도 공간적으로 떨어지면 서로 다른 Grain으로 집계합니다.",
+        "방위 분율은 표준 cubic IPF-Z 색(적<001>, 녹<101>, 청<111>)에 대한 근사입니다.",
     ]
     if not has_scale:
         notes.append("스케일(µm/pixel)이 없어 길이와 면적은 pixel 단위입니다. ASTM G는 계산하지 않습니다.")
@@ -268,6 +256,7 @@ def analyze_image(
         notes.append("가장자리 Grain은 잘렸을 수 있어 크기가 과소평가될 수 있습니다.")
 
     return {
+        "kind": "ipf",
         "summary": {
             "grain_count": len(grains),
             "edge_grain_count": edge_count,
@@ -285,9 +274,11 @@ def analyze_image(
             "method": method,
             "min_grain_px": min_grain_px,
             "exclude_edge": exclude_edge,
+            "texture_index": texture_index,
         },
         "histogram": _histogram(ecds, areas),
         "size_classes": _size_classes(ecds, areas, has_scale),
+        "texture": texture_components,
         "grains": grains,
         "overlay_png_base64": overlay,
         "notes": notes,

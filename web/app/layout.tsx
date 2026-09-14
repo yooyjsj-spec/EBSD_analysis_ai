@@ -10,8 +10,8 @@ const sans = Noto_Sans_KR({
 });
 
 export const metadata: Metadata = {
-  title: "EBSD Grain 분석",
-  description: "EBSD 맵 이미지에서 Grain 크기와 분율을 자동 분석합니다.",
+  title: "Metal Analysis AI",
+  description: "SEM, IPF, KAM 맵에서 금속 미세조직을 분석합니다.",
 };
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {
