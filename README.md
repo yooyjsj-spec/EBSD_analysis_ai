@@ -13,25 +13,17 @@
 
 ## 로컬 실행
 
-### 1) 분석 API
+저장소 루트에서 최초 1회 의존성을 설치하고 개발 서버를 실행합니다.
 
 ```bash
-cd api
-python3 -m venv .venv
-source .venv/bin/activate
-pip install -r requirements.txt
-uvicorn app.main:app --reload --port 8000
-```
-
-### 2) 웹
-
-```bash
-cd web
 npm install
+npm run setup
 npm run dev
 ```
 
-브라우저에서 [http://localhost:3000](http://localhost:3000) 을 엽니다. Next.js가 `/api/*` 요청을 FastAPI(`localhost:8000`)로 전달합니다.
+`npm run dev`가 FastAPI(8000)와 Next.js(3000)를 동시에 실행합니다. 브라우저에서 [http://localhost:3000](http://localhost:3000) 을 엽니다.
+
+개별 실행이 필요하면 `npm run dev:api` 또는 `npm run dev:web`을 사용합니다.
 
 ### Docker Compose
 
@@ -65,9 +57,8 @@ docker compose up --build
 ## 테스트
 
 ```bash
-cd api
-source .venv/bin/activate
-pytest
+npm test
+npm run build
 ```
 
 ## 분석 가정
