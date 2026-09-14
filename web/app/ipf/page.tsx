@@ -1,6 +1,7 @@
 "use client";
 
 import { useMemo, useRef, useState } from "react";
+import { ScaleCalibrator } from "../components/ScaleCalibrator";
 import { Histogram, KpiCard, SiteHeader, formatNum, formatPct } from "../components/ui";
 import { runIpf } from "../lib/clientAnalysis";
 import type { IpfResult } from "../lib/types";
@@ -102,18 +103,7 @@ export default function IpfPage() {
         </div>
 
         <div className="space-y-4 rounded-2xl border border-metal-line bg-metal-panel p-5">
-          <label className="block text-sm">
-            <span className="mb-1 block text-metal-muted">스케일 µm/pixel (선택)</span>
-            <input
-              type="number"
-              min="0"
-              step="0.001"
-              placeholder="예: 0.25"
-              value={umPerPixel}
-              onChange={(e) => setUmPerPixel(e.target.value)}
-              className="w-full rounded-lg border border-metal-line bg-metal-bg px-3 py-2 outline-none focus:border-metal-gold"
-            />
-          </label>
+          <ScaleCalibrator file={file} value={umPerPixel} onChange={setUmPerPixel} />
           <label className="block text-sm">
             <span className="mb-1 block text-metal-muted">최소 Grain 면적: {minGrainPx} px</span>
             <input type="range" min={8} max={400} value={minGrainPx} onChange={(e) => setMinGrainPx(Number(e.target.value))} className="w-full" />

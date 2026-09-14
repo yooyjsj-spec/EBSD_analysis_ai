@@ -1,6 +1,7 @@
 "use client";
 
 import { useMemo, useRef, useState } from "react";
+import { ScaleCalibrator } from "../components/ScaleCalibrator";
 import { KpiCard, SiteHeader, formatNum, formatPct } from "../components/ui";
 import { runSem } from "../lib/clientAnalysis";
 import type { SemResult } from "../lib/types";
@@ -85,18 +86,7 @@ export default function SemPage() {
           {file && <p className="mt-3 text-xs text-metal-muted">{file.name}</p>}
         </div>
         <div className="space-y-4 rounded-2xl border border-metal-line bg-metal-panel p-5">
-          <label className="block text-sm">
-            <span className="mb-1 block text-metal-muted">스케일 µm/pixel (선택)</span>
-            <input
-              type="number"
-              min="0"
-              step="0.001"
-              placeholder="예: 0.05"
-              value={umPerPixel}
-              onChange={(e) => setUmPerPixel(e.target.value)}
-              className="w-full rounded-lg border border-metal-line bg-metal-bg px-3 py-2 outline-none focus:border-metal-gold"
-            />
-          </label>
+          <ScaleCalibrator file={file} value={umPerPixel} onChange={setUmPerPixel} />
           <label className="block text-sm">
             <span className="mb-1 block text-metal-muted">최소 선형 흔적: {minFeaturePx} px</span>
             <input type="range" min={8} max={120} value={minFeaturePx} onChange={(e) => setMinFeaturePx(Number(e.target.value))} className="w-full" />
