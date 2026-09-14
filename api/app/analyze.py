@@ -11,9 +11,10 @@ import cv2
 import numpy as np
 from PIL import Image
 from skimage.color import label2rgb
+from skimage.graph import cut_threshold, rag_mean_color
 from skimage.measure import regionprops
 from skimage.morphology import dilation, disk
-from skimage.segmentation import expand_labels, felzenszwalb, find_boundaries, relabel_sequential
+from skimage.segmentation import expand_labels, find_boundaries, relabel_sequential
 
 MAX_LONG_EDGE = 2048
 MAX_FILE_BYTES = 25 * 1024 * 1024
@@ -51,24 +52,38 @@ def _maybe_resize(rgb: np.ndarray) -> tuple[np.ndarray, float]:
     return resized, scale
 
 
-def _segment(rgb: np.ndarray, min_area_px: int) -> tuple[np.ndarray, str]:
-    """Segment grains. Color-aware Felzenszwalb works well on IPF maps."""
-    h, w = rgb.shape[:2]
-    pixel_count = h * w
-    scale_param = max(40.0, min(180.0, math.sqrt(pixel_count) / 6.0))
-    min_size = max(int(min_area_px), 8)
+def _connected_components_by_value(color_ids: np.ndarray) -> np.ndarray:
+    """4-connected components that stay within the same quantized color."""
+    labels = np.zeros(color_ids.shape, dtype=np.int32)
+    next_id = 1
+    for value in np.unique(color_ids):
+        mask = (color_ids == value).astype(np.uint8)
+        count, components = cv2.connectedComponents(mask, connectivity=4)
+        for idx in range(1, count):
+            labels[components == idx] = next_id
+            next_id += 1
+    return labels
 
-    labels = felzenszwalb(
-        rgb,
-        scale=scale_param,
-        sigma=0.8,
-        min_size=min_size,
-        channel_axis=-1,
-    )
-    labels = labels + 1
+
+def _segment(rgb: np.ndarray, min_area_px: int) -> tuple[np.ndarray, str]:
+    """Segment grains by Lab quantization + connected components (IPF-friendly)."""
+    smooth = cv2.bilateralFilter(rgb, d=7, sigmaColor=35, sigmaSpace=7)
+    lab = cv2.cvtColor(smooth, cv2.COLOR_RGB2LAB)
+    bin_size = 12
+    quant = (lab.astype(np.int32) // bin_size)
+    color_ids = (quant[:, :, 0] << 16) + (quant[:, :, 1] << 8) + quant[:, :, 2]
+    labels = _connected_components_by_value(color_ids)
+
+    if int(labels.max()) > 1:
+        rag = rag_mean_color(smooth, labels, mode="distance")
+        labels = cut_threshold(labels, rag, thresh=22)
+        labels = np.asarray(labels, dtype=np.int32)
+        if int(labels.min()) < 1:
+            labels = labels - int(labels.min()) + 1
+
     labels = _absorb_small_regions(labels, min_area_px)
     labels, _, _ = relabel_sequential(labels)
-    return labels.astype(np.int32), "felzenszwalb"
+    return labels.astype(np.int32), "lab_quantize_cc"
 
 
 def _absorb_small_regions(labels: np.ndarray, min_area_px: int) -> np.ndarray:
