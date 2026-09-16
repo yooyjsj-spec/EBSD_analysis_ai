@@ -101,6 +101,49 @@ function regionGrow(
   return { labels, count: current };
 }
 
+function dilateMask4(mask: Uint8Array, w: number, h: number): Uint8Array {
+  const out = new Uint8Array(mask);
+  const n = w * h;
+  for (let p = 0; p < n; p++) {
+    if (!mask[p]) continue;
+    const x = p % w;
+    const y = (p / w) | 0;
+    if (x > 0) out[p - 1] = 1;
+    if (x < w - 1) out[p + 1] = 1;
+    if (y > 0) out[p - w] = 1;
+    if (y < h - 1) out[p + w] = 1;
+  }
+  return out;
+}
+
+/** Connected interiors of a wall mask (the yellow Sobel edges). */
+function labelInteriors(walls: Uint8Array, w: number, h: number): { labels: Int32Array; count: number } {
+  const n = w * h;
+  const labels = new Int32Array(n).fill(0);
+  const stack = new Int32Array(n);
+  let current = 0;
+  for (let start = 0; start < n; start++) {
+    if (walls[start] || labels[start] !== 0) continue;
+    current += 1;
+    let top = 0;
+    labels[start] = current;
+    stack[top++] = start;
+    while (top > 0) {
+      const p = stack[--top];
+      const x = p % w;
+      const y = (p / w) | 0;
+      const nb = [x > 0 ? p - 1 : -1, x < w - 1 ? p + 1 : -1, y > 0 ? p - w : -1, y < h - 1 ? p + w : -1];
+      for (let k = 0; k < 4; k++) {
+        const q = nb[k];
+        if (q < 0 || walls[q] || labels[q] !== 0) continue;
+        labels[q] = current;
+        stack[top++] = q;
+      }
+    }
+  }
+  return { labels, count: current };
+}
+
 function regionGrowGray(
   gray: Float32Array,
   w: number,
@@ -413,42 +456,7 @@ export async function runSem(
   const { data, w, h, ow, oh, scale } = await loadImageData(file);
   const gray = toGray(data, w, h);
   const npx = w * h;
-
-  // Grain candidates via grayscale region growing.
   const minArea = Math.max(8, Math.round(opts.minFeaturePx * scale * scale));
-  const grown = regionGrowGray(gray, w, h, 22);
-  const gstats = regionStats(grown.labels, w, h, grown.count);
-  const areaToOriginal = 1 / (scale * scale);
-  const hasScale = opts.umPerPixel !== null;
-  const um = opts.umPerPixel ?? 1;
-  const grainsRaw: { id: number; area_px: number; area: number; ecd: number; touches_edge: boolean; cx: number; cy: number }[] = [];
-  for (const s of gstats.values()) {
-    if (s.area < minArea) continue;
-    const areaPx = s.area * areaToOriginal;
-    const areaPhys = hasScale ? areaPx * um * um : areaPx;
-    grainsRaw.push({
-      id: s.label,
-      area_px: areaPx,
-      area: areaPhys,
-      ecd: 2 * Math.sqrt(areaPhys / Math.PI),
-      touches_edge: s.touchesEdge,
-      cx: s.sumX / s.area / scale,
-      cy: s.sumY / s.area / scale,
-    });
-  }
-  grainsRaw.sort((a, b) => b.area - a.area);
-  const totalGrainArea = grainsRaw.reduce((s, g) => s + g.area, 0) || 1;
-  const grains = grainsRaw.map((g) => ({
-    id: g.id,
-    area_px: g.area_px,
-    area: g.area,
-    ecd: g.ecd,
-    area_fraction: g.area / totalGrainArea,
-    touches_edge: g.touches_edge,
-    centroid_x: g.cx,
-    centroid_y: g.cy,
-  }));
-  const grainCount = grains.length;
 
   // Sobel gradients.
   const mag = new Float32Array(npx);
@@ -526,6 +534,42 @@ export async function runSem(
     if (size >= Math.max(12, opts.minFeaturePx)) traceCount += 1;
   }
 
+  // Grain areas = interiors enclosed by those same yellow edges.
+  const walls = dilateMask4(edge, w, h);
+  const interiors = labelInteriors(walls, w, h);
+  const gstats = regionStats(interiors.labels, w, h, interiors.count);
+  const areaToOriginal = 1 / (scale * scale);
+  const hasScale = opts.umPerPixel !== null;
+  const um = opts.umPerPixel ?? 1;
+  const grainsRaw: { id: number; area_px: number; area: number; ecd: number; touches_edge: boolean; cx: number; cy: number }[] = [];
+  for (const s of gstats.values()) {
+    if (s.area < minArea) continue;
+    const areaPx = s.area * areaToOriginal;
+    const areaPhys = hasScale ? areaPx * um * um : areaPx;
+    grainsRaw.push({
+      id: s.label,
+      area_px: areaPx,
+      area: areaPhys,
+      ecd: 2 * Math.sqrt(areaPhys / Math.PI),
+      touches_edge: s.touchesEdge,
+      cx: s.sumX / s.area / scale,
+      cy: s.sumY / s.area / scale,
+    });
+  }
+  grainsRaw.sort((a, b) => b.area - a.area);
+  const totalGrainArea = grainsRaw.reduce((s, g) => s + g.area, 0) || 1;
+  const grains = grainsRaw.map((g) => ({
+    id: g.id,
+    area_px: g.area_px,
+    area: g.area,
+    ecd: g.ecd,
+    area_fraction: g.area / totalGrainArea,
+    touches_edge: g.touches_edge,
+    centroid_x: g.cx,
+    centroid_y: g.cy,
+  }));
+  const grainCount = grains.length;
+
   const lengthOrig = edgePx / Math.max(scale, 1e-9);
   const areaPx = ow * oh;
   let density: number;
@@ -567,19 +611,13 @@ export async function runSem(
   }
   substructure = substructure / ((Math.ceil(h / 2) * Math.ceil(w / 2)) || 1) / 255;
 
-  // Overlay: gold traces, cyan grain boundaries.
-  const grainMask = boundaryMask(grown.labels, w, h);
+  // Overlay: gold Sobel edges only (same lines used to measure grain area).
   const px = new Uint8ClampedArray(data.length);
   for (let i = 0, p = 0; i < npx; i++, p += 4) {
     if (edge[i]) {
       px[p] = 255;
       px[p + 1] = 208;
       px[p + 2] = 64;
-      px[p + 3] = 255;
-    } else if (grainMask[i]) {
-      px[p] = 53;
-      px[p + 1] = 208;
-      px[p + 2] = 255;
       px[p + 3] = 255;
     } else {
       px[p] = data[p];
@@ -592,8 +630,7 @@ export async function runSem(
 
   const notes = [
     CLIENT_NOTE,
-    "금색 선은 슬립 밴드·전위 콘트라스트 등 선형 흔적 후보(강한 에지)입니다.",
-    "하늘색 선은 Grain 경계 후보이며, 아래 목록에서 면적·ECD를 확인할 수 있습니다.",
+    "금색 선은 강한 에지(입계·슬립 흔적)입니다. Grain 면적은 이 노란 선으로 둘러싸인 영역의 넓이입니다.",
     "텍스처는 결정방위가 아니라 표면 형상/콘트라스트의 방향 이방성입니다.",
   ];
   if (!opts.umPerPixel) notes.push("스케일이 없어 흔적 밀도와 Grain 면적은 pixel 단위입니다.");
