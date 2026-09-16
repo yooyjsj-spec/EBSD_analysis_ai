@@ -1,0 +1,352 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>파면 자동분석 프로토타입</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.0/chart.umd.js"></script>
+<script src="./fracto_core.js"></script>
+<style>
+  :root{
+    --bg:#f7f6f3; --panel:#ffffff; --text:#1f1c19; --text2:#6b6459;
+    --accent:#c15a3a; --border:#e4dfd6;
+  }
+  @media (prefers-color-scheme: dark){
+    :root{ --bg:#1b1917; --panel:#242220; --text:#f1ede7; --text2:#a89f92; --border:#3a352f; }
+  }
+  *{box-sizing:border-box}
+  body{margin:0;font-family:-apple-system,'Noto Sans KR',sans-serif;background:var(--bg);color:var(--text);padding:24px;}
+  h1{font-size:20px;margin:0 0 4px}
+  .sub{color:var(--text2);font-size:13px;margin-bottom:20px}
+  .panel{background:var(--panel);border:1px solid var(--border);border-radius:10px;padding:18px;margin-bottom:16px}
+  .drop{border:2px dashed var(--border);border-radius:8px;padding:30px;text-align:center;color:var(--text2);cursor:pointer;font-size:14px}
+  .drop.drag{border-color:var(--accent);color:var(--accent)}
+  .controls{display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:12px;margin-top:14px}
+  label{font-size:12px;color:var(--text2);display:block;margin-bottom:4px}
+  input[type=number]{width:100%;padding:6px 8px;border:1px solid var(--border);border-radius:6px;background:var(--bg);color:var(--text)}
+  button{background:var(--accent);color:#fff;border:none;padding:10px 18px;border-radius:6px;font-size:14px;cursor:pointer}
+  button:disabled{opacity:.5;cursor:default}
+  button.ghost{background:transparent;color:var(--accent);border:1px solid var(--accent)}
+  .row{display:flex;gap:16px;flex-wrap:wrap}
+  .col{flex:1;min-width:280px}
+  canvas.overlay{max-width:100%;border:1px solid var(--border);border-radius:6px}
+  .stat{display:inline-block;margin-right:18px;font-size:13px}
+  .stat b{font-size:16px;display:block}
+  .note{font-size:12px;color:var(--text2);margin-top:8px;line-height:1.5}
+  .hidden{display:none}
+</style>
+</head>
+<body>
+<h1>파면 자동분석 프로토타입</h1>
+<div class="sub">Facet/딤플 분할 · 크기분포 · 능선 방향(이방성) — 외부 라이브러리 없이 순수 JS로 동작</div>
+
+<div class="panel">
+  <div id="drop" class="drop">SEM 파면 이미지를 드래그하거나 클릭하여 업로드 (PNG/JPEG/TIFF*)</div>
+  <input id="fileInput" type="file" accept="image/*" class="hidden">
+  <div class="controls">
+    <div>
+      <label>스케일 (µm / px, 원본 이미지 기준)</label>
+      <input id="pxSize" type="number" step="0.001" value="1.96">
+    </div>
+    <div>
+      <label>블러 반경 (노이즈 완화, px)</label>
+      <input id="blurRadius" type="number" value="3" min="1" max="10">
+    </div>
+    <div>
+      <label>최소 셀 간격 (분할 세밀도, px)</label>
+      <input id="minDist" type="number" value="10" min="3" max="60">
+    </div>
+    <div>
+      <label>능선 검출 상위 퍼센타일</label>
+      <input id="oriThresh" type="number" value="0.85" step="0.01" min="0.5" max="0.99">
+    </div>
+  </div>
+  <div style="margin-top:14px">
+    <button id="runBtn" disabled>분석 실행</button>
+    <span id="fileStatus" class="note"></span>
+  </div>
+  <div class="note">
+    * TIFF는 브라우저가 기본적으로 렌더링하지 못하는 경우가 있습니다(사파리/크롬 최신 버전은 대체로 지원). 안 열리면 PNG로 변환 후 업로드하세요.<br>
+    * "스케일"은 <b>원본 이미지</b> 기준 µm/px입니다. 큰 이미지는 처리 속도를 위해 내부적으로 축소되지만 결과는 자동으로 원본 스케일로 환산됩니다.
+  </div>
+</div>
+
+<div id="results" class="hidden">
+  <div class="panel">
+    <div class="row">
+      <div class="col">
+        <div style="font-size:13px;color:var(--text2);margin-bottom:6px">경계선 오버레이 (빨간선 = 분할 경계)</div>
+        <canvas id="overlayCanvas" class="overlay"></canvas>
+      </div>
+      <div class="col">
+        <div style="font-size:13px;color:var(--text2);margin-bottom:6px">요약</div>
+        <div id="summary"></div>
+        <div class="note" id="caveat"></div>
+        <button id="csvBtn" class="ghost" style="margin-top:12px">facet 지름(µm) CSV 다운로드</button>
+      </div>
+    </div>
+  </div>
+  <div class="panel">
+    <canvas id="sizeChart" height="90"></canvas>
+  </div>
+  <div class="panel">
+    <canvas id="oriChart" height="90"></canvas>
+  </div>
+  <div class="panel">
+    <div class="row" style="align-items:flex-end;margin-bottom:10px">
+      <div style="max-width:160px">
+        <label>상위 몇 개</label>
+        <input id="topNInput" type="number" value="20" min="1" max="500">
+      </div>
+      <div>
+        <button id="reportBtn">리포트 생성</button>
+        <button id="copyBtn" class="ghost">클립보드 복사 (엑셀에 붙여넣기)</button>
+        <button id="reportCsvBtn" class="ghost">CSV 다운로드</button>
+      </div>
+    </div>
+    <div class="note" style="margin-bottom:10px">
+      크기를 큰 순서대로 정렬해 상위 N개와 전체 평균·중앙값을 뽑습니다. "클립보드 복사"를 누른 뒤 엑셀 셀에 바로 붙여넣기(Ctrl+V)하면 열이 자동으로 나뉩니다.
+    </div>
+    <div id="reportTableWrap" style="overflow-x:auto"></div>
+  </div>
+</div>
+
+<script>
+const dropEl = document.getElementById('drop');
+const fileInput = document.getElementById('fileInput');
+const runBtn = document.getElementById('runBtn');
+const fileStatus = document.getElementById('fileStatus');
+let loadedImage = null;
+
+dropEl.addEventListener('click', () => fileInput.click());
+['dragover','dragleave','drop'].forEach(evt=>{
+  dropEl.addEventListener(evt, e=>{
+    e.preventDefault();
+    dropEl.classList.toggle('drag', evt==='dragover');
+  });
+});
+dropEl.addEventListener('drop', e=>{
+  const f = e.dataTransfer.files[0];
+  if (f) loadFile(f);
+});
+fileInput.addEventListener('change', e=>{
+  if (e.target.files[0]) loadFile(e.target.files[0]);
+});
+
+function loadFile(file){
+  const reader = new FileReader();
+  reader.onload = ev=>{
+    const img = new Image();
+    img.onload = ()=>{
+      loadedImage = img;
+      runBtn.disabled = false;
+      fileStatus.textContent = `${file.name} (${img.width}×${img.height}px) 로드됨`;
+    };
+    img.onerror = ()=>{ fileStatus.textContent = '이미지를 열 수 없습니다 (TIFF라면 PNG로 변환해 보세요).'; };
+    img.src = ev.target.result;
+  };
+  reader.readAsDataURL(file);
+}
+
+function percentile(sortedArr, p){
+  if (!sortedArr.length) return NaN;
+  const idx = Math.min(sortedArr.length-1, Math.floor(p*sortedArr.length));
+  return sortedArr[idx];
+}
+
+let lastDiamUm = [];
+
+runBtn.addEventListener('click', ()=>{
+  if (!loadedImage) return;
+  runBtn.disabled = true; runBtn.textContent = '분석 중...';
+  setTimeout(()=>{ // UI가 멈춘 것처럼 보이지 않게 한 틱 미룸
+    try { runAnalysis(); } finally {
+      runBtn.disabled = false; runBtn.textContent = '분석 실행';
+    }
+  }, 30);
+});
+
+function runAnalysis(){
+  const MAX_DIM = 700;
+  const ow = loadedImage.width, oh = loadedImage.height;
+  const scaleDown = Math.min(1, MAX_DIM / Math.max(ow, oh));
+  const w = Math.round(ow * scaleDown), h = Math.round(oh * scaleDown);
+
+  const srcCanvas = document.createElement('canvas');
+  srcCanvas.width = w; srcCanvas.height = h;
+  const sctx = srcCanvas.getContext('2d');
+  sctx.drawImage(loadedImage, 0, 0, w, h);
+  const imgData = sctx.getImageData(0, 0, w, h);
+
+  const gray = new Float32Array(w*h);
+  for (let i=0;i<w*h;i++){
+    const r=imgData.data[i*4], g=imgData.data[i*4+1], b=imgData.data[i*4+2];
+    gray[i] = 0.299*r + 0.587*g + 0.114*b;
+  }
+
+  const userPxSize = parseFloat(document.getElementById('pxSize').value) || 1;
+  const effectivePxSize = userPxSize / scaleDown; // 축소된 만큼 보정
+  const blurRadius = parseInt(document.getElementById('blurRadius').value) || 3;
+  const minDist = parseInt(document.getElementById('minDist').value) || 10;
+  const oriThresh = parseFloat(document.getElementById('oriThresh').value) || 0.85;
+
+  const smoothed = FractoCore.boxBlur(gray, w, h, blurRadius, 2);
+  const { markers, count } = FractoCore.findSeeds(smoothed, w, h, minDist);
+  const { gx, gy, mag } = FractoCore.sobel(smoothed, w, h);
+  const labels = FractoCore.watershed(mag, markers, w, h);
+  const areasPx = FractoCore.regionAreas(labels, count);
+  const bmask = FractoCore.boundaryMask(labels, w, h);
+
+  // 너무 작은(노이즈성) 영역 제외
+  const MIN_AREA_PX = Math.max(9, Math.round((minDist*minDist)/8));
+  const diamUm = [];
+  areasPx.forEach(a=>{
+    if (a < MIN_AREA_PX) return;
+    const dPx = 2*Math.sqrt(a/Math.PI);
+    diamUm.push(dPx * effectivePxSize);
+  });
+  diamUm.sort((a,b)=>a-b);
+  lastDiamUm = diamUm;
+
+  // 오버레이 렌더
+  const overlay = document.getElementById('overlayCanvas');
+  overlay.width = w; overlay.height = h;
+  const octx = overlay.getContext('2d');
+  octx.putImageData(imgData, 0, 0);
+  const outData = octx.getImageData(0,0,w,h);
+  for (let i=0;i<w*h;i++){
+    if (bmask[i]){
+      outData.data[i*4]=209; outData.data[i*4+1]=59; outData.data[i*4+2]=48; outData.data[i*4+3]=255;
+    }
+  }
+  octx.putImageData(outData,0,0);
+
+  // 능선 방향 히스토그램
+  const nBins = 18;
+  const oriBins = FractoCore.orientationHistogram(gx, gy, mag, nBins, oriThresh);
+  const binWidth = 180/nBins;
+  const oriLabels = Array.from({length:nBins}, (_,i)=>`${Math.round(i*binWidth)}-${Math.round((i+1)*binWidth)}°`);
+  let dominantIdx = 0;
+  for (let i=1;i<nBins;i++) if (oriBins[i] > oriBins[dominantIdx]) dominantIdx = i;
+  const dominantAngle = `${Math.round(dominantIdx*binWidth)}~${Math.round((dominantIdx+1)*binWidth)}°`;
+
+  // 요약
+  const n = diamUm.length;
+  const median = percentile(diamUm, 0.5);
+  const mean = n ? diamUm.reduce((a,b)=>a+b,0)/n : NaN;
+  const p10 = percentile(diamUm, 0.10);
+  const p90 = percentile(diamUm, 0.90);
+
+  document.getElementById('summary').innerHTML = `
+    <span class="stat"><b>${n}</b>개 facet</span>
+    <span class="stat"><b>${median.toFixed(1)}</b>µm 중앙값</span>
+    <span class="stat"><b>${p10.toFixed(1)}–${p90.toFixed(1)}</b>µm (p10–p90)</span>
+    <span class="stat"><b>${dominantAngle}</b> 우세 능선방향</span>
+  `;
+  document.getElementById('caveat').textContent =
+    '※ facet 크기는 밝기(=지형 대리) 기반 근사이며 "최소 셀 간격" 값에 결과가 민감합니다. 실제 결정립 크기(EBSD/IPF)와 별도로 비교·검증하세요.';
+
+  renderCharts(diamUm, oriBins, oriLabels);
+  document.getElementById('results').classList.remove('hidden');
+  renderSizeReport();
+}
+
+let sizeChartObj=null, oriChartObj=null;
+function renderCharts(diamUm, oriBins, oriLabels){
+  // 크기 히스토그램 bin 구성
+  const nBins = 15;
+  const min = diamUm[0]||0, max = diamUm[diamUm.length-1]||1;
+  const binW = Math.max(0.001,(max-min)/nBins);
+  const counts = new Array(nBins).fill(0);
+  diamUm.forEach(d=>{
+    let b = Math.floor((d-min)/binW);
+    if (b>=nBins) b = nBins-1; if (b<0) b=0;
+    counts[b]++;
+  });
+  const sizeLabels = Array.from({length:nBins},(_,i)=>(min+i*binW).toFixed(0));
+
+  const sctx = document.getElementById('sizeChart').getContext('2d');
+  if (sizeChartObj) sizeChartObj.destroy();
+  sizeChartObj = new Chart(sctx, {
+    type:'bar',
+    data:{ labels:sizeLabels, datasets:[{ label:'facet 개수', data:counts, backgroundColor:'#c15a3a' }] },
+    options:{ plugins:{ title:{display:true, text:'Facet 등가지름 분포 (µm)'} },
+      scales:{ x:{ title:{display:true, text:'등가지름(µm)'} }, y:{ title:{display:true, text:'개수'} } } }
+  });
+
+  const octx = document.getElementById('oriChart').getContext('2d');
+  if (oriChartObj) oriChartObj.destroy();
+  oriChartObj = new Chart(octx, {
+    type:'bar',
+    data:{ labels:oriLabels, datasets:[{ label:'가중치(그래디언트 크기 합)', data:Array.from(oriBins), backgroundColor:'#3d7ab5' }] },
+    options:{ plugins:{ title:{display:true, text:'강한 능선의 방향 분포'} },
+      scales:{ x:{ title:{display:true, text:'방향(도)'} }, y:{ title:{display:true, text:'가중치 합'} } } }
+  });
+}
+
+document.getElementById('csvBtn').addEventListener('click', ()=>{
+  if (!lastDiamUm.length) return;
+  const csv = 'diameter_um\n' + lastDiamUm.join('\n');
+  const blob = new Blob([csv], {type:'text/csv'});
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = 'facet_diameters_um.csv';
+  a.click();
+});
+
+// ---- 상위 N개 + 평균 리포트 (엑셀/CSV로 옮기기 쉬운 형태) ----
+let lastReport = null;
+
+function renderSizeReport(){
+  if (!lastDiamUm.length) return;
+  const topN = parseInt(document.getElementById('topNInput').value) || 20;
+  const report = FractoCore.sizeReport(lastDiamUm, topN, 'µm');
+  lastReport = report;
+
+  let html = '<table style="width:100%;border-collapse:collapse;font-size:13px">';
+  html += `<tr style="border-bottom:1px solid var(--border)"><th style="text-align:left;padding:4px 8px">순위</th><th style="text-align:right;padding:4px 8px">크기 (µm)</th></tr>`;
+  report.top.forEach((v,i)=>{
+    html += `<tr><td style="padding:3px 8px;color:var(--text2)">${i+1}</td><td style="padding:3px 8px;text-align:right">${v.toFixed(2)}</td></tr>`;
+  });
+  html += `<tr style="border-top:1px solid var(--border)"><td style="padding:6px 8px"><b>평균 (n=${report.n})</b></td><td style="padding:6px 8px;text-align:right"><b>${report.mean.toFixed(2)}</b></td></tr>`;
+  html += `<tr><td style="padding:3px 8px">중앙값</td><td style="padding:3px 8px;text-align:right">${report.median.toFixed(2)}</td></tr>`;
+  html += '</table>';
+  document.getElementById('reportTableWrap').innerHTML = html;
+}
+
+async function copyToClipboard(text){
+  try { await navigator.clipboard.writeText(text); return true; }
+  catch(e){
+    const ta = document.createElement('textarea');
+    ta.value = text; ta.style.position='fixed'; ta.style.opacity='0';
+    document.body.appendChild(ta); ta.select();
+    try { document.execCommand('copy'); } catch(e2){}
+    document.body.removeChild(ta);
+    return true;
+  }
+}
+
+document.getElementById('reportBtn').addEventListener('click', renderSizeReport);
+
+document.getElementById('copyBtn').addEventListener('click', async ()=>{
+  if (!lastReport) renderSizeReport();
+  if (!lastReport) return;
+  await copyToClipboard(lastReport.tsv);
+  const btn = document.getElementById('copyBtn');
+  const orig = btn.textContent;
+  btn.textContent = '복사됨 ✓';
+  setTimeout(()=>{ btn.textContent = orig; }, 1500);
+});
+
+document.getElementById('reportCsvBtn').addEventListener('click', ()=>{
+  if (!lastReport) renderSizeReport();
+  if (!lastReport) return;
+  const blob = new Blob([lastReport.csv], {type:'text/csv'});
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = `top${document.getElementById('topNInput').value||20}_size_report.csv`;
+  a.click();
+});
+</script>
+</body>
+</html>
