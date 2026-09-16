@@ -8,6 +8,20 @@ import type { SemResult } from "../lib/types";
 
 const ACCEPT = "image/png,image/jpeg,image/tiff,image/webp,.png,.jpg,.jpeg,.tif,.tiff,.webp";
 
+function downloadCsv(result: SemResult) {
+  const unit = result.summary.unit;
+  const areaUnit = unit === "µm" ? "um2" : "px";
+  const header = ["id", `area_${areaUnit}`, `ecd_${unit}`, "area_fraction", "touches_edge"];
+  const rows = result.grains.map((g) => [g.id, g.area, g.ecd, g.area_fraction, g.touches_edge].join(","));
+  const blob = new Blob([[header.join(","), ...rows].join("\n")], { type: "text/csv;charset=utf-8" });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = "sem-grain-analysis.csv";
+  a.click();
+  URL.revokeObjectURL(url);
+}
+
 export default function SemPage() {
   const inputRef = useRef<HTMLInputElement>(null);
   const [file, setFile] = useState<File | null>(null);
@@ -55,6 +69,9 @@ export default function SemPage() {
 
   const displayImage = showOverlay && overlayUrl ? overlayUrl : previewUrl;
   const maxTex = Math.max(0.0001, ...(result?.texture.map((t) => t.fraction) ?? [0]));
+  const unit = result?.summary.unit ?? "px";
+  const tableRows = result?.grains.slice(0, 50) ?? [];
+  const meanArea = result && result.grains.length ? result.grains.reduce((s, g) => s + g.area, 0) / result.grains.length : 0;
 
   return (
     <main className="mx-auto min-h-screen max-w-6xl px-4 py-8 sm:px-6 lg:px-8">
@@ -106,7 +123,7 @@ export default function SemPage() {
       {result && (
         <section className="mt-10 space-y-6">
           <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
-            <KpiCard label="Grain 후보" value={formatNum(result.summary.grain_count, 0)} />
+            <KpiCard label="Grain 후보" value={formatNum(result.summary.grain_count, 0)} hint={`평균 면적 ${formatNum(meanArea)} ${unit === "µm" ? "µm²" : "px"}`} />
             <KpiCard label="선형 흔적" value={formatNum(result.summary.trace_count, 0)} hint={`밀도 ${formatNum(result.summary.trace_density, 4)} ${result.summary.density_unit}`} />
             <KpiCard label="콘트라스트" value={formatNum(result.summary.contrast)} hint={`아구조 ${formatNum(result.summary.substructure)}`} />
             <KpiCard label="텍스처 이방성" value={formatNum(result.summary.anisotropy)} hint="1이면 등방, 클수록 방향성" />
@@ -139,6 +156,38 @@ export default function SemPage() {
                   </li>
                 ))}
               </ul>
+            </div>
+          </div>
+          <div className="rounded-2xl border border-metal-line bg-metal-panel p-4">
+            <div className="mb-3 flex items-center justify-between">
+              <h2 className="text-sm font-semibold">Grain 목록 (상위 {tableRows.length})</h2>
+              <button type="button" onClick={() => downloadCsv(result)} className="rounded-full border border-metal-line px-3 py-1 text-xs text-metal-muted">
+                CSV 다운로드
+              </button>
+            </div>
+            <div className="overflow-x-auto">
+              <table className="w-full min-w-[640px] text-left text-sm">
+                <thead className="text-xs uppercase text-metal-muted">
+                  <tr>
+                    <th className="py-2">ID</th>
+                    <th>면적 ({unit === "µm" ? "µm²" : "px"})</th>
+                    <th>ECD ({unit})</th>
+                    <th>면적분율</th>
+                    <th>가장자리</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {tableRows.map((g) => (
+                    <tr key={g.id} className="border-t border-metal-line/70">
+                      <td className="py-2">{g.id}</td>
+                      <td>{formatNum(g.area)}</td>
+                      <td>{formatNum(g.ecd)}</td>
+                      <td>{formatPct(g.area_fraction)}</td>
+                      <td>{g.touches_edge ? "예" : "아니오"}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
             </div>
           </div>
           <ul className="space-y-1 text-xs text-metal-muted">

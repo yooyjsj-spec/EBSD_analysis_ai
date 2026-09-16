@@ -68,6 +68,7 @@ export type SemResult = {
     method: string;
   };
   texture: { label: string; fraction: number }[];
+  grains: Grain[];
   overlay_png_base64: string;
   notes: string[];
 };

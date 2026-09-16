@@ -418,8 +418,37 @@ export async function runSem(
   const minArea = Math.max(8, Math.round(opts.minFeaturePx * scale * scale));
   const grown = regionGrowGray(gray, w, h, 22);
   const gstats = regionStats(grown.labels, w, h, grown.count);
-  let grainCount = 0;
-  for (const s of gstats.values()) if (s.area >= minArea) grainCount += 1;
+  const areaToOriginal = 1 / (scale * scale);
+  const hasScale = opts.umPerPixel !== null;
+  const um = opts.umPerPixel ?? 1;
+  const grainsRaw: { id: number; area_px: number; area: number; ecd: number; touches_edge: boolean; cx: number; cy: number }[] = [];
+  for (const s of gstats.values()) {
+    if (s.area < minArea) continue;
+    const areaPx = s.area * areaToOriginal;
+    const areaPhys = hasScale ? areaPx * um * um : areaPx;
+    grainsRaw.push({
+      id: s.label,
+      area_px: areaPx,
+      area: areaPhys,
+      ecd: 2 * Math.sqrt(areaPhys / Math.PI),
+      touches_edge: s.touchesEdge,
+      cx: s.sumX / s.area / scale,
+      cy: s.sumY / s.area / scale,
+    });
+  }
+  grainsRaw.sort((a, b) => b.area - a.area);
+  const totalGrainArea = grainsRaw.reduce((s, g) => s + g.area, 0) || 1;
+  const grains = grainsRaw.map((g) => ({
+    id: g.id,
+    area_px: g.area_px,
+    area: g.area,
+    ecd: g.ecd,
+    area_fraction: g.area / totalGrainArea,
+    touches_edge: g.touches_edge,
+    centroid_x: g.cx,
+    centroid_y: g.cy,
+  }));
+  const grainCount = grains.length;
 
   // Sobel gradients.
   const mag = new Float32Array(npx);
@@ -538,13 +567,19 @@ export async function runSem(
   }
   substructure = substructure / ((Math.ceil(h / 2) * Math.ceil(w / 2)) || 1) / 255;
 
-  // Overlay: gold edges over original.
+  // Overlay: gold traces, cyan grain boundaries.
+  const grainMask = boundaryMask(grown.labels, w, h);
   const px = new Uint8ClampedArray(data.length);
   for (let i = 0, p = 0; i < npx; i++, p += 4) {
     if (edge[i]) {
       px[p] = 255;
       px[p + 1] = 208;
       px[p + 2] = 64;
+      px[p + 3] = 255;
+    } else if (grainMask[i]) {
+      px[p] = 53;
+      px[p + 1] = 208;
+      px[p + 2] = 255;
       px[p + 3] = 255;
     } else {
       px[p] = data[p];
@@ -558,9 +593,10 @@ export async function runSem(
   const notes = [
     CLIENT_NOTE,
     "금색 선은 슬립 밴드·전위 콘트라스트 등 선형 흔적 후보(강한 에지)입니다.",
+    "하늘색 선은 Grain 경계 후보이며, 아래 목록에서 면적·ECD를 확인할 수 있습니다.",
     "텍스처는 결정방위가 아니라 표면 형상/콘트라스트의 방향 이방성입니다.",
   ];
-  if (!opts.umPerPixel) notes.push("스케일이 없어 흔적 밀도는 pixel 단위입니다.");
+  if (!opts.umPerPixel) notes.push("스케일이 없어 흔적 밀도와 Grain 면적은 pixel 단위입니다.");
 
   return {
     kind: "sem",
@@ -579,6 +615,7 @@ export async function runSem(
       method: "client_sobel_edges",
     },
     texture,
+    grains,
     overlay_png_base64: overlay,
     notes,
   };
