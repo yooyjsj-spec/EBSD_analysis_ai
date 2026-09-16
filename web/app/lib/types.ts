@@ -93,3 +93,26 @@ export type KamResult = {
   overlay_png_base64: string;
   notes: string[];
 };
+
+export type FractureResult = {
+  kind: "fracture";
+  summary: {
+    facet_count: number;
+    median_ecd: number;
+    mean_ecd: number;
+    p10: number;
+    p90: number;
+    dominant_angle: string;
+    unit: "µm" | "px";
+    image_width: number;
+    image_height: number;
+    scale_um_per_px: number | null;
+    method: string;
+  };
+  histogram: HistogramBin[];
+  texture: { label: string; fraction: number }[];
+  facets: { rank: number; ecd: number }[];
+  report_csv: string;
+  overlay_png_base64: string;
+  notes: string[];
+};

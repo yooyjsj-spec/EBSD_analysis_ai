@@ -4,16 +4,17 @@ const LINKS = [
   { href: "/sem", id: "sem", label: "SEM" },
   { href: "/ipf", id: "ipf", label: "IPF" },
   { href: "/kam", id: "kam", label: "KAM" },
+  { href: "/fracture", id: "fracture", label: "파면" },
 ] as const;
 
-export function SiteHeader({ current }: { current?: "sem" | "ipf" | "kam" | "home" }) {
+export function SiteHeader({ current }: { current?: "sem" | "ipf" | "kam" | "fracture" | "home" }) {
   return (
     <header className="mb-8 flex flex-col gap-4 border-b border-metal-line pb-6 sm:flex-row sm:items-end sm:justify-between">
       <div>
         <Link href="/" className="mb-1 block text-xs font-semibold uppercase tracking-[0.22em] text-metal-gold">
           Metal Analysis AI
         </Link>
-        <p className="text-sm text-metal-muted">SEM · IPF · KAM 맵 분석</p>
+        <p className="text-sm text-metal-muted">SEM · IPF · KAM · 파면 분석</p>
       </div>
       <nav className="flex flex-wrap gap-2">
         <Link

@@ -1,6 +1,6 @@
 # EBSD Analysis AI
 
-금속 미세조직 이미지를 업로드하면 SEM / IPF / KAM 맵을 종류별로 분석하는 웹앱입니다.
+금속 미세조직 이미지를 업로드하면 SEM / IPF / KAM / 파면 맵을 종류별로 분석하는 웹앱입니다.
 
 분석은 **브라우저 안에서(Canvas)** 실행되므로 별도 서버 없이 정적 사이트로 배포됩니다.
 
@@ -21,6 +21,11 @@
 | `/sem` | SEM 이미지: Grain 콘트라스트, 슬립·전위 흔적, 형태 텍스처 |
 | `/ipf` | IPF 맵: Grain 크기·분율, cubic 방위 텍스처 |
 | `/kam` | KAM 맵: 평균 KAM, 재결정/변형 분율, GND 근사 |
+| `/fracture` | SEM 파면: facet/딤플 분할, 등가지름, 능선 방향 |
+
+GitHub에 올린 원본 데모 HTML도 정적 사이트로 같이 배포됩니다.
+
+- https://yooyjsj-spec.github.io/EBSD_analysis_ai/fractography/fracture_analysis_demo.html
 
 ## 스케일바 자동 인식
 

@@ -23,6 +23,13 @@ const MAPS = [
     body: "KAM 맵에서 국소 변형, 재결정/변형 분율, GND 밀도 근사를 분석합니다.",
     items: ["평균 KAM", "재결정 분율", "GND 근사"],
   },
+  {
+    href: "/fracture",
+    code: "파면",
+    title: "파괴 균열 검사",
+    body: "SEM 파면에서 facet/딤플을 분할하고 등가지름 분포와 능선 방향 이방성을 분석합니다.",
+    items: ["Facet 분할", "등가지름 분포", "능선 방향"],
+  },
 ];
 
 export default function HomePage() {
@@ -32,10 +39,10 @@ export default function HomePage() {
       <section className="mb-10 max-w-3xl">
         <h1 className="text-4xl font-semibold tracking-tight sm:text-5xl">금속 미세조직 분석</h1>
         <p className="mt-4 text-base leading-7 text-metal-muted">
-          분석할 맵 종류를 선택하세요. SEM, IPF, KAM 페이지가 분리되어 있으며, 각 페이지에서 해당 이미지에 맞는 정량 지표를 계산합니다.
+          분석할 맵 종류를 선택하세요. SEM, IPF, KAM, 파면 페이지가 분리되어 있으며, 각 페이지에서 해당 이미지에 맞는 정량 지표를 계산합니다.
         </p>
       </section>
-      <section className="grid gap-5 md:grid-cols-3">
+      <section className="grid gap-5 md:grid-cols-2 xl:grid-cols-4">
         {MAPS.map((map) => (
           <Link
             key={map.href}
