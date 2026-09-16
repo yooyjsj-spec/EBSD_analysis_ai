@@ -116,14 +116,71 @@ function dilateMask4(mask: Uint8Array, w: number, h: number): Uint8Array {
   return out;
 }
 
-/** Connected interiors of a wall mask (the yellow Sobel edges). */
-function labelInteriors(walls: Uint8Array, w: number, h: number): { labels: Int32Array; count: number } {
+// --- Grain segmentation for SEM: marker-controlled watershed on a smoothed
+// gradient. A flat threshold on edge strength (as used for slip-trace /
+// dislocation-contrast detection) is *not* reused for grain walls: strong
+// internal features (slip bands, scratches, channeling contrast) would slice
+// a single grain into many fragments, while faint boundaries would leave gaps
+// that let neighboring grains bleed together. Watershed is robust to both,
+// which is why it's also what the Python backend uses for SEM segmentation.
+
+function boxBlur(gray: Float32Array, w: number, h: number, radius: number): Float32Array {
+  const tmp = new Float32Array(w * h);
+  const out = new Float32Array(w * h);
+  const span = radius * 2 + 1;
+  for (let y = 0; y < h; y++) {
+    const row = y * w;
+    let sum = 0;
+    for (let x = -radius; x <= radius; x++) sum += gray[row + Math.min(w - 1, Math.max(0, x))];
+    for (let x = 0; x < w; x++) {
+      tmp[row + x] = sum / span;
+      const addX = Math.min(w - 1, x + radius + 1);
+      const subX = Math.max(0, x - radius);
+      sum += gray[row + addX] - gray[row + subX];
+    }
+  }
+  for (let x = 0; x < w; x++) {
+    let sum = 0;
+    for (let y = -radius; y <= radius; y++) sum += tmp[Math.min(h - 1, Math.max(0, y)) * w + x];
+    for (let y = 0; y < h; y++) {
+      out[y * w + x] = sum / span;
+      const addY = Math.min(h - 1, y + radius + 1);
+      const subY = Math.max(0, y - radius);
+      sum += tmp[addY * w + x] - tmp[subY * w + x];
+    }
+  }
+  return out;
+}
+
+function sobelMagnitude(gray: Float32Array, w: number, h: number): Float32Array {
+  const mag = new Float32Array(w * h);
+  for (let y = 1; y < h - 1; y++) {
+    for (let x = 1; x < w - 1; x++) {
+      const i = y * w + x;
+      const gx =
+        -gray[i - w - 1] - 2 * gray[i - 1] - gray[i + w - 1] + gray[i - w + 1] + 2 * gray[i + 1] + gray[i + w + 1];
+      const gy =
+        -gray[i - w - 1] - 2 * gray[i - w] - gray[i - w + 1] + gray[i + w - 1] + 2 * gray[i + w] + gray[i + w + 1];
+      mag[i] = Math.sqrt(gx * gx + gy * gy);
+    }
+  }
+  return mag;
+}
+
+function percentileValue(values: Float32Array, q: number): number {
+  const sorted = Float32Array.from(values).sort();
+  if (sorted.length === 0) return 0;
+  const idx = Math.min(sorted.length - 1, Math.max(0, Math.floor((q / 100) * sorted.length)));
+  return sorted[idx];
+}
+
+function connectedComponentsMask(mask: Uint8Array, w: number, h: number): { labels: Int32Array; count: number } {
   const n = w * h;
   const labels = new Int32Array(n).fill(0);
   const stack = new Int32Array(n);
   let current = 0;
   for (let start = 0; start < n; start++) {
-    if (walls[start] || labels[start] !== 0) continue;
+    if (!mask[start] || labels[start] !== 0) continue;
     current += 1;
     let top = 0;
     labels[start] = current;
@@ -135,7 +192,7 @@ function labelInteriors(walls: Uint8Array, w: number, h: number): { labels: Int3
       const nb = [x > 0 ? p - 1 : -1, x < w - 1 ? p + 1 : -1, y > 0 ? p - w : -1, y < h - 1 ? p + w : -1];
       for (let k = 0; k < 4; k++) {
         const q = nb[k];
-        if (q < 0 || walls[q] || labels[q] !== 0) continue;
+        if (q < 0 || !mask[q] || labels[q] !== 0) continue;
         labels[q] = current;
         stack[top++] = q;
       }
@@ -144,44 +201,217 @@ function labelInteriors(walls: Uint8Array, w: number, h: number): { labels: Int3
   return { labels, count: current };
 }
 
-function regionGrowGray(
-  gray: Float32Array,
-  w: number,
-  h: number,
-  threshold: number,
-): { labels: Int32Array; count: number } {
+const WATERSHED_LEVELS = 256;
+
+/** Marker-controlled watershed: floods outward from `markers` in order of ascending gradient. */
+function watershedGrow(mag: Float32Array, w: number, h: number, markers: Int32Array): Int32Array {
   const n = w * h;
-  const labels = new Int32Array(n).fill(0);
-  const stack = new Int32Array(n);
-  let current = 0;
-  for (let start = 0; start < n; start++) {
-    if (labels[start] !== 0) continue;
-    current += 1;
-    const seed = gray[start];
-    let top = 0;
-    labels[start] = current;
-    stack[top++] = start;
-    while (top > 0) {
-      const p = stack[--top];
-      const px = p % w;
-      const py = (p / w) | 0;
-      const neighbors = [
-        px > 0 ? p - 1 : -1,
-        px < w - 1 ? p + 1 : -1,
-        py > 0 ? p - w : -1,
-        py < h - 1 ? p + w : -1,
-      ];
-      for (let k = 0; k < 4; k++) {
-        const q = neighbors[k];
-        if (q < 0 || labels[q] !== 0) continue;
-        if (Math.abs(gray[q] - seed) <= threshold) {
-          labels[q] = current;
-          stack[top++] = q;
+  const labels = Int32Array.from(markers);
+  let minV = Infinity;
+  let maxV = -Infinity;
+  for (let i = 0; i < n; i++) {
+    if (mag[i] < minV) minV = mag[i];
+    if (mag[i] > maxV) maxV = mag[i];
+  }
+  const range = maxV - minV || 1;
+  const level = new Uint8Array(n);
+  for (let i = 0; i < n; i++) {
+    level[i] = Math.min(WATERSHED_LEVELS - 1, Math.floor(((mag[i] - minV) / range) * (WATERSHED_LEVELS - 1)));
+  }
+
+  const buckets: number[][] = Array.from({ length: WATERSHED_LEVELS }, () => []);
+  const queued = new Uint8Array(n);
+  for (let p = 0; p < n; p++) {
+    if (labels[p] !== 0) continue;
+    const x = p % w;
+    const y = (p / w) | 0;
+    const nb = [x > 0 ? p - 1 : -1, x < w - 1 ? p + 1 : -1, y > 0 ? p - w : -1, y < h - 1 ? p + w : -1];
+    for (const q of nb) {
+      if (q >= 0 && labels[q] > 0) {
+        buckets[level[p]].push(p);
+        queued[p] = 1;
+        break;
+      }
+    }
+  }
+
+  for (let lvl = 0; lvl < WATERSHED_LEVELS; lvl++) {
+    const bucket = buckets[lvl];
+    for (let idx = 0; idx < bucket.length; idx++) {
+      const p = bucket[idx];
+      if (labels[p] !== 0) continue;
+      const x = p % w;
+      const y = (p / w) | 0;
+      const nb = [x > 0 ? p - 1 : -1, x < w - 1 ? p + 1 : -1, y > 0 ? p - w : -1, y < h - 1 ? p + w : -1];
+      let assigned = 0;
+      for (const q of nb) {
+        if (q >= 0 && labels[q] > 0) {
+          assigned = labels[q];
+          break;
+        }
+      }
+      if (assigned === 0) continue;
+      labels[p] = assigned;
+      for (const q of nb) {
+        if (q >= 0 && labels[q] === 0 && !queued[q]) {
+          queued[q] = 1;
+          const lv = level[q];
+          if (lv <= lvl) bucket.push(q);
+          else buckets[lv].push(q);
         }
       }
     }
   }
-  return { labels, count: current };
+  return labels;
+}
+
+function regionAreas(labels: Int32Array): Map<number, number> {
+  const areas = new Map<number, number>();
+  for (let i = 0; i < labels.length; i++) {
+    const l = labels[i];
+    if (l <= 0) continue;
+    areas.set(l, (areas.get(l) ?? 0) + 1);
+  }
+  return areas;
+}
+
+/** Drops regions below `minArea` and grows the survivors to fill the gaps (BFS, like skimage's expand_labels). */
+function absorbSmallRegions(labels: Int32Array, w: number, h: number, minArea: number): Int32Array {
+  const areas = regionAreas(labels);
+  const out = Int32Array.from(labels);
+  let removed = false;
+  let kept = false;
+  for (let i = 0; i < out.length; i++) {
+    if (out[i] > 0) {
+      if ((areas.get(out[i]) ?? 0) < minArea) {
+        out[i] = 0;
+        removed = true;
+      } else {
+        kept = true;
+      }
+    }
+  }
+  if (!removed || !kept) return out;
+
+  const n = w * h;
+  const visited = new Uint8Array(n);
+  let frontier: number[] = [];
+  for (let p = 0; p < n; p++) {
+    if (out[p] > 0) {
+      visited[p] = 1;
+      frontier.push(p);
+    }
+  }
+  while (frontier.length > 0) {
+    const next: number[] = [];
+    for (const p of frontier) {
+      const label = out[p];
+      const x = p % w;
+      const y = (p / w) | 0;
+      const nb = [x > 0 ? p - 1 : -1, x < w - 1 ? p + 1 : -1, y > 0 ? p - w : -1, y < h - 1 ? p + w : -1];
+      for (const q of nb) {
+        if (q >= 0 && !visited[q] && out[q] === 0) {
+          out[q] = label;
+          visited[q] = 1;
+          next.push(q);
+        }
+      }
+    }
+    frontier = next;
+  }
+  return out;
+}
+
+/** Tiny union-find used to merge watershed catchment basins that turn out to have near-identical mean brightness. */
+class UnionFind {
+  parent: Int32Array;
+  constructor(n: number) {
+    this.parent = new Int32Array(n);
+    for (let i = 0; i < n; i++) this.parent[i] = i;
+  }
+  find(x: number): number {
+    while (this.parent[x] !== x) {
+      this.parent[x] = this.parent[this.parent[x]];
+      x = this.parent[x];
+    }
+    return x;
+  }
+  union(a: number, b: number): void {
+    const ra = this.find(a);
+    const rb = this.find(b);
+    if (ra !== rb) this.parent[ra] = rb;
+  }
+}
+
+function meansByLabel(gray: Float32Array, labels: Int32Array, maxLabel: number): Float64Array {
+  const sums = new Float64Array(maxLabel + 1);
+  const counts = new Int32Array(maxLabel + 1);
+  for (let i = 0; i < labels.length; i++) {
+    const l = labels[i];
+    if (l <= 0) continue;
+    sums[l] += gray[i];
+    counts[l] += 1;
+  }
+  const means = new Float64Array(maxLabel + 1);
+  for (let l = 1; l <= maxLabel; l++) means[l] = counts[l] ? sums[l] / counts[l] : 0;
+  return means;
+}
+
+/** Merges adjacent regions whose mean gray level differs by less than `threshold` (a thresholded RAG cut). */
+function ragMergeByMean(labels: Int32Array, w: number, h: number, means: Float64Array, threshold: number): Int32Array {
+  const uf = new UnionFind(means.length);
+  for (let y = 0; y < h; y++) {
+    for (let x = 0; x < w; x++) {
+      const p = y * w + x;
+      const l = labels[p];
+      if (l <= 0) continue;
+      if (x < w - 1) {
+        const r = labels[p + 1];
+        if (r > 0 && r !== l && Math.abs(means[l] - means[r]) < threshold) uf.union(l, r);
+      }
+      if (y < h - 1) {
+        const d = labels[p + w];
+        if (d > 0 && d !== l && Math.abs(means[l] - means[d]) < threshold) uf.union(l, d);
+      }
+    }
+  }
+  const out = new Int32Array(labels.length);
+  for (let i = 0; i < labels.length; i++) out[i] = labels[i] > 0 ? uf.find(labels[i]) : 0;
+  return out;
+}
+
+const GRAIN_MERGE_THRESHOLD = 11;
+
+/**
+ * Grain segmentation for SEM: watershed the gradient (from markers seeded in
+ * low-gradient basins) and then merge the resulting catchment basins by mean
+ * brightness. The watershed alone over-segments badly — per-pixel sensor
+ * noise breaks up what should be one flat grain interior into hundreds of
+ * tiny separate basins, and slip/dislocation contrast adds more — but those
+ * spurious basins share almost the same mean gray level as their neighbors,
+ * so a mean-intensity region merge (mirrors skimage's RAG mean-color cut,
+ * used server-side) fuses them back together while leaving genuine grain
+ * boundaries (a real brightness step) intact. Validated against synthetic
+ * grain images with internal slip-line texture before landing this.
+ */
+function watershedSegmentGrains(gray: Float32Array, w: number, h: number, minArea: number): Int32Array {
+  const segGray = boxBlur(gray, w, h, 2);
+  const segMag = sobelMagnitude(segGray, w, h);
+  const seedThreshold = percentileValue(segMag, 18);
+  const seedMask = new Uint8Array(w * h);
+  for (let i = 0; i < seedMask.length; i++) if (segMag[i] <= seedThreshold) seedMask[i] = 1;
+  let seeds = connectedComponentsMask(seedMask, w, h);
+  if (seeds.count === 0) {
+    // Degenerate (near-uniform) gradient: seed from the single lowest-gradient pixel.
+    let minIdx = 0;
+    for (let i = 1; i < segMag.length; i++) if (segMag[i] < segMag[minIdx]) minIdx = i;
+    seeds.labels[minIdx] = 1;
+    seeds = { labels: seeds.labels, count: 1 };
+  }
+  const grown = watershedGrow(segMag, w, h, seeds.labels);
+  const means = meansByLabel(gray, grown, seeds.count);
+  const merged = ragMergeByMean(grown, w, h, means, GRAIN_MERGE_THRESHOLD);
+  return absorbSmallRegions(merged, w, h, minArea);
 }
 
 function percentileFromCdf(values: number[], weights: number[], q: number): number {
@@ -534,10 +764,10 @@ export async function runSem(
     if (size >= Math.max(12, opts.minFeaturePx)) traceCount += 1;
   }
 
-  // Grain areas = interiors enclosed by those same yellow edges.
-  const walls = dilateMask4(edge, w, h);
-  const interiors = labelInteriors(walls, w, h);
-  const gstats = regionStats(interiors.labels, w, h, interiors.count);
+  // Grain areas via marker-controlled watershed (see watershedSegmentGrains) —
+  // independent of the trace/dislocation edge mask above.
+  const grainLabels = watershedSegmentGrains(gray, w, h, minArea);
+  const gstats = regionStats(grainLabels, w, h, 0);
   const areaToOriginal = 1 / (scale * scale);
   const hasScale = opts.umPerPixel !== null;
   const um = opts.umPerPixel ?? 1;
@@ -611,13 +841,19 @@ export async function runSem(
   }
   substructure = substructure / ((Math.ceil(h / 2) * Math.ceil(w / 2)) || 1) / 255;
 
-  // Overlay: gold Sobel edges only (same lines used to measure grain area).
+  // Overlay: gold = trace/dislocation edges, cyan = watershed grain boundaries.
+  const grainBoundary = boundaryMask(grainLabels, w, h);
   const px = new Uint8ClampedArray(data.length);
   for (let i = 0, p = 0; i < npx; i++, p += 4) {
     if (edge[i]) {
       px[p] = 255;
       px[p + 1] = 208;
       px[p + 2] = 64;
+      px[p + 3] = 255;
+    } else if (grainBoundary[i]) {
+      px[p] = 53;
+      px[p + 1] = 208;
+      px[p + 2] = 255;
       px[p + 3] = 255;
     } else {
       px[p] = data[p];
@@ -630,7 +866,8 @@ export async function runSem(
 
   const notes = [
     CLIENT_NOTE,
-    "금색 선은 강한 에지(입계·슬립 흔적)입니다. Grain 면적은 이 노란 선으로 둘러싸인 영역의 넓이입니다.",
+    "금색 선은 슬립 밴드·전위 콘트라스트 등 강한 에지(선형 흔적 후보)입니다.",
+    "하늘색 선은 watershed로 구한 Grain 경계 후보이며, 아래 목록에서 면적·ECD를 확인할 수 있습니다.",
     "텍스처는 결정방위가 아니라 표면 형상/콘트라스트의 방향 이방성입니다.",
   ];
   if (!opts.umPerPixel) notes.push("스케일이 없어 흔적 밀도와 Grain 면적은 pixel 단위입니다.");
@@ -649,7 +886,7 @@ export async function runSem(
       image_width: ow,
       image_height: oh,
       scale_um_per_px: opts.umPerPixel,
-      method: "client_sobel_edges",
+      method: "client_watershed_grains",
     },
     texture,
     grains,
