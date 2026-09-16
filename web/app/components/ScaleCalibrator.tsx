@@ -14,7 +14,7 @@ type Props = {
 
 export function ScaleCalibrator({ file, value, onChange }: Props) {
   const [detection, setDetection] = useState<ScaleBarDetection | null>(null);
-  const [physical, setPhysical] = useState("10");
+  const [physical, setPhysical] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -39,6 +39,7 @@ export function ScaleCalibrator({ file, value, onChange }: Props) {
     try {
       const found = await detectScaleBar(file);
       setDetection(found);
+      if (found.labelUm && found.labelUm > 0) setPhysical(String(found.labelUm));
     } catch (err) {
       setDetection(null);
       setError(err instanceof Error ? err.message : "스케일바 인식에 실패했습니다.");
@@ -54,7 +55,7 @@ export function ScaleCalibrator({ file, value, onChange }: Props) {
 
   const spanLabel =
     detection && detection.measuredFrom === "ticks"
-      ? `눈금 ${detection.divisions}칸`
+      ? `첫 눈금부터 마지막 눈금까지 ${detection.divisions}칸`
       : "스케일바 전체";
 
   return (
@@ -75,7 +76,7 @@ export function ScaleCalibrator({ file, value, onChange }: Props) {
       <div className="rounded-xl border border-metal-line bg-metal-bg/60 p-3">
         <div className="flex items-center justify-between gap-2">
           <p className="text-xs text-metal-muted">
-            이미지 우하단 스케일바를 찾아 눈금 길이를 자동으로 잽니다.
+            우하단 눈금 첫 칸부터 마지막 칸까지를 잽니다. 10칸 = 옆에 적힌 µm입니다.
           </p>
           <button
             type="button"
@@ -102,6 +103,12 @@ export function ScaleCalibrator({ file, value, onChange }: Props) {
                 {formatNum((detection.spanPx / detection.imageWidth) * 100, 1)}%)
               </span>
             </p>
+            {detection.labelUm ? (
+              <p className="text-xs text-metal-gold">
+                라벨에서 {formatNum(detection.labelUm, 0)} µm 를 읽었습니다. {detection.divisions}칸
+                전체 길이가 이 값입니다.
+              </p>
+            ) : null}
             <label className="block text-sm">
               <span className="mb-1 block text-metal-muted">
                 {spanLabel}의 실제 길이 (µm) — 스케일바 옆에 적힌 값

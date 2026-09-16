@@ -11,7 +11,7 @@ execSync(
   `npx tsc app/lib/scaleBar.ts --outDir ${out} --module esnext --target es2020 --lib es2020,dom --skipLibCheck`,
   { stdio: "inherit" },
 );
-const { locateScaleBar } = await import(join(out, "scaleBar.js"));
+const { locateScaleBar, readScaleLabelUm } = await import(join(out, "scaleBar.js"));
 
 function makeImage({
   w = 1024,
@@ -111,6 +111,107 @@ console.log("small 6-division bar at bottom right");
   const found = locateScaleBar(data, w, h);
   check("bar located", !!found);
   if (found) check("7 ticks", found.ticks.length === 7, String(found.ticks.length));
+}
+
+console.log("TESCAN-style isolated 11 ticks / 10 divisions, no connecting bar");
+{
+  const w = 1024;
+  const h = 768;
+  const data = new Uint8ClampedArray(w * h * 4);
+  const put = (x, y, v) => {
+    const p = (y * w + x) * 4;
+    data[p] = data[p + 1] = data[p + 2] = v;
+    data[p + 3] = 255;
+  };
+  for (let y = 0; y < h; y++) {
+    for (let x = 0; x < w; x++) {
+      const v = y < 700 ? 90 + ((x * 7 + y * 13) % 70) : 8;
+      put(x, y, v);
+    }
+  }
+  // Left-side info text: irregular vertical strokes that must NOT be the first tick.
+  for (const x of [20, 34, 55, 78, 92, 120, 140]) {
+    for (let y = 720; y < 736; y++) put(x, y, 255);
+  }
+  const tickX0 = 620;
+  const tickGap = 28;
+  const tickCount = 11;
+  for (let i = 0; i < tickCount; i++) {
+    const x = tickX0 + i * tickGap;
+    for (let t = 0; t < 2; t++) for (let y = 704; y <= 710; y++) put(x + t, y, 255);
+  }
+  const found = locateScaleBar(data, w, h);
+  check("ruler located", !!found);
+  if (found) {
+    const span = found.ticks[found.ticks.length - 1] - found.ticks[0];
+    check("11 ticks", found.ticks.length === 11, String(found.ticks.length));
+    check("starts near 620, not the left text", found.ticks[0] >= 600, String(found.ticks[0]));
+    check("span ~280", Math.abs(span - 10 * tickGap) <= 4, String(span));
+  }
+}
+
+console.log("real TESCAN banner crop (first tick to last = 10 divisions, label 500µm)");
+{
+  const fixture = new URL("./fixtures/tescan_scale_banner.png", import.meta.url).pathname;
+  const rawPath = join(out, "banner.raw");
+  execSync(
+    `/workspace/api/.venv/bin/python - <<'PY'
+from PIL import Image
+import struct
+im = Image.open("${fixture}").convert("RGBA")
+w, h = im.size
+open("${rawPath}", "wb").write(struct.pack("<II", w, h) + im.tobytes())
+PY`,
+    { stdio: "pipe" },
+  );
+  const fs = await import("node:fs");
+  const buf = fs.readFileSync(rawPath);
+  const w = buf.readUInt32LE(0);
+  const h = buf.readUInt32LE(4);
+  const data = new Uint8ClampedArray(buf.subarray(8));
+  const found = locateScaleBar(data, w, h);
+  check("ruler located", !!found);
+  if (found) {
+    const span = found.ticks[found.ticks.length - 1] - found.ticks[0];
+    check("11 ticks", found.ticks.length === 11, String(found.ticks.length));
+    check("first tick on the right half", found.ticks[0] > w * 0.4, String(found.ticks[0]));
+    check("span ~272", Math.abs(span - 272.5) <= 6, String(span));
+    const label = found.labelUm ?? readScaleLabelUm(data, w, h, found.polarity, found.bar.x0);
+    check("label 500µm", label === 500, String(label));
+  }
+}
+
+console.log("real TESCAN banner pasted on a full-size micrograph");
+{
+  const fixture = new URL("./fixtures/tescan_scale_banner.png", import.meta.url).pathname;
+  const rawPath = join(out, "full.raw");
+  execSync(
+    `/workspace/api/.venv/bin/python - <<'PY'
+from PIL import Image
+import struct, numpy as np
+banner = Image.open("${fixture}").convert("RGBA")
+W, Bh = banner.size
+H = 640
+full = Image.new("RGBA", (W, H), (90, 90, 90, 255))
+full.paste(banner, (0, H - Bh))
+open("${rawPath}", "wb").write(struct.pack("<II", W, H) + full.tobytes())
+PY`,
+    { stdio: "pipe" },
+  );
+  const fs2 = await import("node:fs");
+  const buf = fs2.readFileSync(rawPath);
+  const w = buf.readUInt32LE(0);
+  const h = buf.readUInt32LE(4);
+  const data = new Uint8ClampedArray(buf.subarray(8));
+  const found = locateScaleBar(data, w, h);
+  check("ruler located", !!found);
+  if (found) {
+    const span = found.ticks[found.ticks.length - 1] - found.ticks[0];
+    check("11 ticks", found.ticks.length === 11, String(found.ticks.length));
+    check("first tick on the right half", found.ticks[0] > w * 0.4, String(found.ticks[0]));
+    check("span ~272", Math.abs(span - 272.5) <= 6, String(span));
+    check("label 500µm", found.labelUm === 500, String(found.labelUm));
+  }
 }
 
 console.log(failures === 0 ? "\nall checks passed" : `\n${failures} check(s) failed`);
